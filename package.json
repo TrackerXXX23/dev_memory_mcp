@@ -1,0 +1,19 @@
+{
+  "name": "dev-memory-server",
+  "version": "0.1.0",
+  "description": "MCP server for persistent development memory across projects",
+  "type": "module",
+  "main": "build/index.js",
+  "scripts": {
+    "build": "tsc && chmod +x build/index.js",
+    "start": "node build/index.js",
+    "dev": "ts-node-esm src/index.ts",
+    "test": "vitest",
+    "setup": "scripts/setup.sh"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0",
+    "ts-node": "^10.9.0"
+  }
+}
