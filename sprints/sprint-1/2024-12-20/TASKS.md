@@ -59,10 +59,10 @@
 - [ ] Improve error messages
 
 ### Integration Tests
-- [ ] Enhance error recovery tests
-- [ ] Improve test setup
-- [ ] Add more edge cases
-- [ ] Test error propagation
+- [x] Enhance error recovery tests
+- [x] Improve test setup
+- [x] Add more edge cases
+- [x] Test error propagation
 
 ### Performance Tests
 - [ ] Add connection failure tests

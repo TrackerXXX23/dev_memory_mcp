@@ -314,6 +314,97 @@ describe('Integration Tests', () => {
       expect(failureCount).toBeGreaterThan(0);
       expect(successCount + failureCount).toBe(testMemories.length);
     });
+
+    it('should handle timeout scenarios', async () => {
+      // Simulate slow operations
+      vectorStore.simulateSlowOperation(true, 5000); // 5 second delay
+
+      // Test with default timeout
+      const timeoutResult = await contextManager.addContext(testMemories[0]);
+      expect(timeoutResult.success).toBe(false);
+      expect(timeoutResult.error).toMatch(/timeout/i);
+
+      // Test with custom timeout
+      const customTimeoutResult = await contextManager.addContext(testMemories[0], { timeout: 6000 });
+      expect(customTimeoutResult.success).toBe(true);
+
+      // Reset simulation
+      vectorStore.simulateSlowOperation(false);
+    });
+
+    it('should handle cascading failures', async () => {
+      // Simulate cascading store failures
+      vectorStore.simulateCascadingFailure(true);
+      memoryStore.simulateConnectionFailure(true);
+
+      const results = await Promise.all([
+        contextManager.addContext(testMemories[0]),
+        contextManager.addContext(testMemories[1]),
+        contextManager.retrieveContext(testVectors.queryVector)
+      ]);
+
+      // All operations should fail gracefully
+      results.forEach(result => {
+        expect(result.success).toBe(false);
+        expect(result.error).toBeDefined();
+      });
+
+      // Reset stores
+      vectorStore.simulateCascadingFailure(false);
+      memoryStore.simulateConnectionFailure(false);
+      await vectorStore.initialize();
+      await memoryStore.initialize();
+
+      // Verify system recovers
+      const recoveryResult = await contextManager.addContext(testMemories[0]);
+      expect(recoveryResult.success).toBe(true);
+    });
+
+    it('should handle partial system degradation', async () => {
+      // Simulate vector store degraded but memory store working
+      vectorStore.simulateDegradedPerformance(true);
+
+      const degradedResult = await contextManager.addContext(testMemories[0]);
+      expect(degradedResult.success).toBe(true);
+      expect(degradedResult.warnings).toBeDefined();
+      expect(degradedResult.warnings).toContain('degraded performance');
+
+      // Verify data is still accessible
+      const queryResult = await contextManager.retrieveContext(testVectors.queryVector);
+      expect(queryResult.success).toBe(true);
+      expect(queryResult.warnings).toBeDefined();
+
+      // Reset simulation
+      vectorStore.simulateDegradedPerformance(false);
+    });
+
+    it('should handle connection pool exhaustion', async () => {
+      // Simulate connection pool limits
+      vectorStore.simulateConnectionPoolExhaustion(true);
+
+      const concurrentOps = Array(10).fill(null).map(() => 
+        contextManager.addContext(testMemories[0])
+      );
+
+      const results = await Promise.all(concurrentOps);
+      
+      // Some operations should succeed, others should fail gracefully
+      const successCount = results.filter(r => r.success).length;
+      const failureCount = results.filter(r => !r.success).length;
+      
+      expect(successCount).toBeGreaterThan(0);
+      expect(failureCount).toBeGreaterThan(0);
+      
+      // Failed operations should have proper error messages
+      results
+        .filter(r => !r.success)
+        .forEach(result => {
+          expect(result.error).toMatch(/connection pool/i);
+        });
+
+      // Reset simulation
+      vectorStore.simulateConnectionPoolExhaustion(false);
+    });
   });
 
   describe('Data Validation', () => {

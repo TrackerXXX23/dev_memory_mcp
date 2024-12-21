@@ -10,6 +10,11 @@ export class MockVectorStore implements VectorStore {
   private connectionCheckInterval: NodeJS.Timeout | null = null;
   private isDisposed: boolean = false;
   private lastError: string | null = null;
+  private simulateFailure: boolean = false;
+  private slowOperationDelay: number = 0;
+  private isDegraded: boolean = false;
+  private isCascadingFailure: boolean = false;
+  private isConnectionPoolExhausted: boolean = false;
 
   constructor() {
     this.isConnected = false; // Start disconnected like real store
@@ -23,8 +28,63 @@ export class MockVectorStore implements VectorStore {
     }
   }
 
-  async initialize(): Promise<VectorOperationResponse> {
+  public simulateSlowOperation(enable: boolean, delayMs: number = 1000) {
+    this.slowOperationDelay = enable ? delayMs : 0;
+  }
+
+  public simulateDegradedPerformance(enable: boolean) {
+    this.isDegraded = enable;
+  }
+
+  public simulateCascadingFailure(enable: boolean) {
+    this.isCascadingFailure = enable;
+  }
+
+  public simulateConnectionPoolExhaustion(enable: boolean) {
+    this.isConnectionPoolExhausted = enable;
+  }
+
+  private async handleOperation<T>(operation: () => Promise<T>): Promise<VectorOperationResponse & Partial<T>> {
     try {
+      if (this.simulateFailure) {
+        this.lastError = 'Simulated connection failure';
+        return { success: false, error: this.lastError };
+      }
+
+      if (this.slowOperationDelay > 0) {
+        await new Promise(resolve => setTimeout(resolve, this.slowOperationDelay));
+      }
+
+      if (this.isCascadingFailure) {
+        this.simulateFailure = true;
+        this.lastError = 'Cascading failure occurred';
+        return { success: false, error: this.lastError };
+      }
+
+      if (this.isConnectionPoolExhausted && Math.random() > 0.3) {
+        this.lastError = 'Connection pool exhausted';
+        return { success: false, error: this.lastError };
+      }
+
+      const result = await operation();
+      const response: VectorOperationResponse & Partial<T> = { 
+        success: true,
+        ...result
+      };
+
+      if (this.isDegraded) {
+        response.warnings = ['degraded performance'];
+      }
+
+      return response;
+    } catch (error) {
+      this.lastError = error instanceof Error ? error.message : 'Unknown error';
+      return { success: false, error: this.lastError };
+    }
+  }
+
+  async initialize(): Promise<VectorOperationResponse> {
+    return this.handleOperation(async () => {
       // Clear any existing state
       await this.dispose();
 
@@ -46,12 +106,9 @@ export class MockVectorStore implements VectorStore {
       // Start connection monitoring
       this.startConnectionMonitoring();
       
+      this.isConnected = true;
       return { success: true };
-    } catch (error) {
-      this.isConnected = false;
-      this.lastError = error instanceof Error ? error.message : 'Failed to initialize';
-      return { success: false, error: this.lastError };
-    }
+    });
   }
 
   getConnectionStatus() {
@@ -62,7 +119,7 @@ export class MockVectorStore implements VectorStore {
   }
 
   async testConnection(): Promise<VectorOperationResponse> {
-    try {
+    return this.handleOperation(async () => {
       if (this.isDisposed) {
         throw new Error('Store not initialized or disposed');
       }
@@ -76,15 +133,11 @@ export class MockVectorStore implements VectorStore {
       this.isConnected = true;
       this.lastError = null;
       return { success: true };
-    } catch (error) {
-      this.isConnected = false;
-      this.lastError = error instanceof Error ? error.message : 'Connection test failed';
-      return { success: false, error: this.lastError };
-    }
+    });
   }
 
   async upsertVectors(vectors: VectorData[]): Promise<VectorOperationResponse> {
-    try {
+    return this.handleOperation(async () => {
       // Input validation
       if (!vectors || !Array.isArray(vectors) || vectors.length === 0) {
         return { success: false, error: 'No vectors provided' };
@@ -114,16 +167,14 @@ export class MockVectorStore implements VectorStore {
         });
       });
       return { success: true };
-    } catch (error) {
-      return { success: false, error: error instanceof Error ? error.message : 'Failed to upsert vectors' };
-    }
+    });
   }
 
   async queryVectors(
     queryVector: number[],
     options?: { topK?: number; filter?: Record<string, any> }
   ): Promise<VectorOperationResponse & { results?: VectorSearchResult[] }> {
-    try {
+    return this.handleOperation(async () => {
       // Input validation
       if (!queryVector || !Array.isArray(queryVector) || queryVector.length === 0) {
         return { success: false, error: 'Invalid query vector' };
@@ -157,13 +208,11 @@ export class MockVectorStore implements VectorStore {
         .slice(0, options?.topK || 10);
 
       return { success: true, results };
-    } catch (error) {
-      return { success: false, error: error instanceof Error ? error.message : 'Failed to query vectors' };
-    }
+    });
   }
 
   async deleteVectors(ids: string[]): Promise<VectorOperationResponse> {
-    try {
+    return this.handleOperation(async () => {
       // Input validation
       if (!ids || !Array.isArray(ids) || ids.length === 0) {
         return { success: false, error: 'No vector IDs provided' };
@@ -181,9 +230,7 @@ export class MockVectorStore implements VectorStore {
 
       ids.forEach(id => this.vectors.delete(id));
       return { success: true };
-    } catch (error) {
-      return { success: false, error: error instanceof Error ? error.message : 'Failed to delete vectors' };
-    }
+    });
   }
 
   private startConnectionMonitoring(): void {
@@ -221,7 +268,7 @@ export class MockVectorStore implements VectorStore {
   }
 
   async dispose(): Promise<VectorOperationResponse> {
-    try {
+    return this.handleOperation(async () => {
       // Mark as disposed first to prevent new operations
       this.isDisposed = true;
 
@@ -237,18 +284,7 @@ export class MockVectorStore implements VectorStore {
       this.vectors.clear();
 
       return { success: true };
-    } catch (error) {
-      // Ensure cleanup even on error
-      this.connectionCheckInterval = null;
-      this.isConnected = false;
-      this.lastError = error instanceof Error ? error.message : 'Failed to dispose';
-      this.vectors.clear();
-
-      return { 
-        success: false, 
-        error: this.lastError 
-      };
-    }
+    });
   }
 
   private calculateCosineSimilarity(a: number[], b: number[]): number {
