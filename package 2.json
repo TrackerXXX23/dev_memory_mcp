@@ -1,0 +1,32 @@
+{
+  "name": "dev-memory-server",
+  "version": "1.0.4",
+  "description": "MCP server for persistent development memory across projects",
+  "type": "module",
+  "main": "build/index.js",
+  "scripts": {
+    "build": "tsc && chmod +x build/index.js",
+    "start": "node build/index.js",
+    "dev": "ts-node-esm src/index.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test-server": "node build/test-server.js",
+    "setup": "scripts/setup.sh"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "ts-node": "^10.9.0",
+    "typescript": "^5.0.0",
+    "vite-tsconfig-paths": "^5.1.4",
+    "vitest": "^2.1.8"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "@pinecone-database/pinecone": "^4.0.0",
+    "dotenv": "^16.4.7",
+    "node-cache": "^5.1.2",
+    "openai": "^4.77.0",
+    "winston": "^3.17.0",
+    "zod": "^3.24.1"
+  }
+}

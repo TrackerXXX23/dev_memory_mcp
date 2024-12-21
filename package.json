@@ -7,13 +7,21 @@
   "scripts": {
     "build": "tsc",
     "start": "node build/index.js",
-    "dev": "tsc -w"
+    "dev": "tsc -w",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.0.4"
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "@pinecone-database/pinecone": "^4.0.0",
+    "dotenv": "^16.4.7",
+    "openai": "^4.77.0"
   },
   "devDependencies": {
     "@types/node": "^20.10.5",
-    "typescript": "^5.3.3"
+    "@vitest/coverage-v8": "^2.1.8",
+    "typescript": "^5.3.3",
+    "vitest": "^2.1.8"
   }
 }

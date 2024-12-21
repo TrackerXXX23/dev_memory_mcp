@@ -1,0 +1,8 @@
+module.exports = {
+  afterTask: async (task, cline) => {
+    if (task.success) {
+      await cline.runCommand('git add .');
+      await cline.runCommand(`git commit -m "${task.type || 'feat'}: ${task.description}\n\nDetails:\n${task.changes.map(change => `- ${change}`).join('\n')}\n\nImpact: ${task.impact || 'Improved development workflow'}"`);
+    }
+  }
+};

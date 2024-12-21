@@ -1,0 +1,80 @@
+# Cline Global Rules
+
+## Task Management Rules
+
+1. Always check sprints/sprint-1/2024-12-20/NEXT_ACTION.md first
+   - This is your primary source of what to work on
+   - Follow the steps in order
+   - Do not skip steps or work on other tasks
+
+2. After completing each task in NEXT_ACTION.md:
+   - Update TASKS.md with completed items
+   - Update PROGRESS.md with progress
+   - Update NEXT_ACTION.md with the next task
+   - Update all metrics and timestamps
+
+3. Task Completion Protocol:
+   - Mark task as complete in TASKS.md
+   - Add completion notes to PROGRESS.md
+   - Move to next task in task chain
+   - Update all related documentation
+
+4. Progress Tracking:
+   - Use ✅ for completed tasks
+   - Use ⏳ for in-progress tasks
+   - Use 🔄 for upcoming tasks
+   - Update timestamps on all changes
+
+5. Documentation Updates:
+   - Keep all sprint documentation in sync
+   - Maintain clear task progression
+   - Track all changes and progress
+   - Keep metrics current
+
+## File Management
+
+1. Sprint Files Location:
+   - All sprint files in sprints/sprint-1/2024-12-20/
+   - NEXT_ACTION.md is primary reference
+   - TASKS.md tracks all tasks
+   - PROGRESS.md shows daily progress
+
+2. Auto-Update Requirements:
+   - Update timestamps after changes
+   - Recalculate progress metrics
+   - Adjust task chain status
+   - Sync documentation
+
+## Development Flow
+
+1. Task Execution:
+   - Read current task from NEXT_ACTION.md
+   - Execute steps in order
+   - Verify expected outputs
+   - Report completion
+
+2. Progress Management:
+   - Update completion status
+   - Move to next task
+   - Track metrics
+   - Maintain documentation
+
+3. Documentation:
+   - Keep all files in sync
+   - Update progress indicators
+   - Track completion times
+   - Note any blockers
+
+## Error Handling
+
+1. Task Blockers:
+   - Document in PROGRESS.md
+   - Update status in NEXT_ACTION.md
+   - Note dependencies
+   - Provide solutions
+
+2. Progress Issues:
+   - Document challenges
+   - Update timelines
+   - Adjust metrics
+   - Note lessons learned
