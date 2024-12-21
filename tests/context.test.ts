@@ -1,11 +1,13 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { ContextManager } from '../src/core/context';
-import { VectorStore, MemoryStore } from '../src/core/store';
-import { ContextEntry, ContextMetadata } from '../src/core/types/context';
+import { VectorStore } from '../src/core/types/vector';
+import { MemoryStore, MemoryMetadata, MemoryOperationResponse } from '../src/core/types/store';
+import { VectorData, VectorOperationResponse, VectorSearchResult } from '../src/core/types/vector';
+import { ContextEntry, ContextMetadata, ContextSearchResult } from '../src/core/types/context';
 
 // Mock implementations
 class MockVectorStore implements VectorStore {
-  private vectors: Map<string, { values: number[]; metadata: any }> = new Map();
+  private vectors: Map<string, VectorData> = new Map();
 
   async initialize() {
     return { success: true };
@@ -19,26 +21,39 @@ class MockVectorStore implements VectorStore {
     return { success: true };
   }
 
-  async upsertVectors(vectors: any[]) {
+  async upsertVectors(vectors: VectorData[]): Promise<VectorOperationResponse> {
     vectors.forEach(v => {
-      this.vectors.set(v.id, {
-        values: v.values,
-        metadata: v.metadata
-      });
+      this.vectors.set(v.id, v);
     });
     return { success: true };
   }
 
-  async queryVectors(queryVector: number[], options?: any) {
-    // Return all vectors with a mock similarity score
-    return {
-      success: true,
-      results: Array.from(this.vectors.entries()).map(([id, data]) => ({
+  async queryVectors(
+    queryVector: number[],
+    options?: { topK?: number; filter?: Record<string, any> }
+  ): Promise<VectorOperationResponse & { results?: VectorSearchResult[] }> {
+    // Simulate vector similarity search with cosine similarity
+    const results = Array.from(this.vectors.entries()).map(([id, data]) => {
+      // Calculate cosine similarity
+      const dotProduct = queryVector.reduce((sum, val, i) => sum + val * data.values[i], 0);
+      const magnitude1 = Math.sqrt(queryVector.reduce((sum, val) => sum + val * val, 0));
+      const magnitude2 = Math.sqrt(data.values.reduce((sum, val) => sum + val * val, 0));
+      const similarity = dotProduct / (magnitude1 * magnitude2);
+      
+      return {
         id,
         values: data.values,
-        score: 0.9,
+        score: similarity,
         metadata: data.metadata
-      }))
+      };
+    });
+
+    // Sort by similarity score in descending order
+    results.sort((a, b) => b.score - a.score);
+
+    return {
+      success: true,
+      results: results.slice(0, options?.topK || results.length)
     };
   }
 
@@ -55,46 +70,86 @@ class MockVectorStore implements VectorStore {
 class MockMemoryStore implements MemoryStore {
   private memories: Map<string, ContextEntry> = new Map();
   private relationships: Map<string, Set<string>> = new Map();
+  private vectorStore: MockVectorStore;
 
-  async storeMemory(content: string, metadata?: any) {
+  constructor(vectorStore: MockVectorStore) {
+    this.vectorStore = vectorStore;
+  }
+
+  async storeMemory(content: string, metadata: MemoryMetadata): Promise<MemoryOperationResponse> {
     const id = metadata?.id || String(this.memories.size);
     const entry: ContextEntry = {
       id,
       content,
       vector: metadata?.vector || [],
-      metadata: { ...metadata, id }
+      metadata: {
+        type: metadata.type,
+        timestamp: metadata.timestamp,
+        tags: metadata.tags,
+        attributes: metadata
+      }
     };
     this.memories.set(id, entry);
     return { success: true };
   }
 
-  async retrieveMemories(query: string | number[], options?: any) {
-    let memories = Array.from(this.memories.values()).map(entry => ({
-      content: entry.content,
-      metadata: {
-        ...entry.metadata,
-        score: 0.9
-      },
-      entry: {
-        id: entry.id,
-        content: entry.content,
-        vector: entry.vector || [],
-        metadata: {
-          ...entry.metadata,
-          score: 0.9
-        }
-      }
-    }));
+  async retrieveMemories(
+    query: string | number[],
+    options?: { topK?: number; filter?: Record<string, any> }
+  ): Promise<MemoryOperationResponse> {
+    let entries = Array.from(this.memories.values());
+    let searchResults: ContextSearchResult[] = [];
     
-    // Filter by time range if provided
-    if (options?.timeRange) {
-      const { start, end } = options.timeRange;
-      memories = memories.filter(m => {
-        const timestamp = m.entry.metadata.timestamp;
-        return timestamp >= start && timestamp <= end;
+    if (Array.isArray(query)) {
+      // Vector query - use vector similarity
+      const vectorResults = await this.vectorStore.queryVectors(query, options);
+      if (!vectorResults.success) {
+        return { success: false, error: 'Vector query failed' };
+      }
+
+      // Map vector results to search results with scores
+      searchResults = (vectorResults.results || []).map(result => {
+        const entry = this.memories.get(result.id);
+        if (!entry) return null;
+        return {
+          entry,
+          score: result.score
+        };
+      }).filter((r): r is ContextSearchResult => r !== null);
+    } else {
+      // Text query - return all entries with default scoring
+      searchResults = entries.map(entry => ({
+        entry,
+        score: 0.5 // Default score for text queries
+      }));
+    }
+
+    // Apply time range filter if provided
+    const timeRange = options?.filter?.timeRange as { start: number; end: number } | undefined;
+    if (timeRange) {
+      const { start, end } = timeRange;
+      searchResults = searchResults.filter(result => {
+        const timestamp = result.entry.metadata.timestamp;
+        return timestamp && timestamp >= start && timestamp <= end;
       });
     }
+
+    // Sort by score in descending order
+    searchResults.sort((a, b) => b.score - a.score);
     
+    // Transform search results into expected memory format
+    const memories = searchResults.slice(0, options?.topK || searchResults.length)
+      .map(result => ({
+        content: result.entry.content,
+        metadata: {
+          id: result.entry.id,
+          type: result.entry.metadata.type,
+          timestamp: result.entry.metadata.timestamp,
+          tags: result.entry.metadata.tags,
+          score: result.score
+        }
+      }));
+
     return {
       success: true,
       memories
@@ -138,7 +193,7 @@ describe('ContextManager', () => {
 
   beforeEach(() => {
     vectorStore = new MockVectorStore();
-    memoryStore = new MockMemoryStore();
+    memoryStore = new MockMemoryStore(vectorStore);
     contextManager = new ContextManager(vectorStore, memoryStore);
   });
 

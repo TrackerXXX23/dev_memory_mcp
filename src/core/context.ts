@@ -2,7 +2,8 @@
  * Context management implementation
  */
 
-import { VectorStore, MemoryStore } from './store';
+import { VectorStore } from './types/vector';
+import { MemoryStore } from './types/store';
 import { VectorData, VectorQueryOptions } from './types/vector';
 import {
   ContextEntry,
@@ -35,6 +36,25 @@ export class ContextManager {
    */
   async addContext(entry: ContextEntry): Promise<ContextOperationResponse> {
     try {
+      // Validate metadata
+      if (!this.validateMetadata(entry.metadata)) {
+        return {
+          success: false,
+          error: 'Invalid metadata: timestamp must be a number'
+        };
+      }
+
+      // Store in memory store
+      const memoryResponse = await this.memoryStore.storeMemory(entry.content, {
+        ...entry.metadata,
+        id: entry.id,
+        vector: entry.vector
+      });
+      
+      if (!memoryResponse.success) {
+        return memoryResponse;
+      }
+
       // Store the context vector
       if (entry.vector) {
         const vectorData: VectorData = {
@@ -72,7 +92,7 @@ export class ContextManager {
 
       return { success: true };
     } catch (error: any) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorMessage = error instanceof Error ? error.message || 'Unknown error' : String(error);
       return {
         success: false,
         error: `Failed to add context: ${errorMessage}`
@@ -99,7 +119,7 @@ export class ContextManager {
       }
 
       // Process results into context entries
-      const contexts: ContextSearchResult[] = [];
+      let contexts: ContextSearchResult[] = [];
       
       for (const memory of queryResponse.memories) {
         const entry: ContextEntry = {
@@ -131,7 +151,7 @@ export class ContextManager {
       // Filter by time range if specified
       if (options?.timeRange) {
         const { start, end } = options.timeRange;
-        contexts.filter(c => {
+        contexts = contexts.filter(c => {
           const timestamp = c.entry.metadata.timestamp;
           return timestamp >= start && timestamp <= end;
         });
@@ -139,7 +159,7 @@ export class ContextManager {
 
       // Filter by context types if specified
       if (options?.contextTypes) {
-        contexts.filter(c => 
+        contexts = contexts.filter(c => 
           options.contextTypes?.includes(c.entry.metadata.type)
         );
       }
@@ -149,10 +169,11 @@ export class ContextManager {
         contexts
       };
     } catch (error: any) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorMessage = error instanceof Error ? error.message || 'Unknown error' : String(error);
       return {
         success: false,
-        error: `Failed to retrieve context: ${errorMessage}`
+        error: `Failed to retrieve context: ${errorMessage}`,
+        contexts: []
       };
     }
   }
@@ -193,10 +214,11 @@ export class ContextManager {
         contexts
       };
     } catch (error: any) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorMessage = error instanceof Error ? error.message || 'Unknown error' : String(error);
       return {
         success: false,
-        error: `Failed to get related contexts: ${errorMessage}`
+        error: `Failed to get related contexts: ${errorMessage}`,
+        contexts: []
       };
     }
   }
@@ -209,6 +231,16 @@ export class ContextManager {
       e => e.source === sourceId && e.target === targetId
     );
     return edge?.strength || 0;
+  }
+
+  /**
+   * Validate context metadata
+   */
+  private validateMetadata(metadata: ContextMetadata): boolean {
+    if (!metadata.timestamp || typeof metadata.timestamp !== 'number') {
+      return false;
+    }
+    return true;
   }
 
   /**
@@ -227,20 +259,33 @@ export class ContextManager {
         };
       }
 
-      // Update node metadata
-      node.metadata = {
-        ...node.metadata,
-        ...metadata
+      // Update memory store
+      const updatedEntry: ContextEntry = {
+        ...node,
+        metadata: {
+          ...node.metadata,
+          ...metadata
+        }
       };
 
+      const memoryResponse = await this.memoryStore.storeMemory(updatedEntry.content, {
+        ...updatedEntry.metadata,
+        id: updatedEntry.id,
+        vector: updatedEntry.vector
+      });
+
+      if (!memoryResponse.success) {
+        return memoryResponse;
+      }
+
       // Update vector metadata if vector exists
-      if (node.vector) {
+      if (updatedEntry.vector) {
         const vectorData: VectorData = {
-          id: node.id,
-          values: node.vector,
+          id: updatedEntry.id,
+          values: updatedEntry.vector,
           metadata: {
-            ...node.metadata,
-            content: node.content
+            ...updatedEntry.metadata,
+            content: updatedEntry.content
           }
         };
 
@@ -251,11 +296,11 @@ export class ContextManager {
       }
 
       // Update graph node
-      this.contextGraph.nodes.set(contextId, node);
+      this.contextGraph.nodes.set(contextId, updatedEntry);
 
       return { success: true };
     } catch (error: any) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorMessage = error instanceof Error ? error.message || 'Unknown error' : String(error);
       return {
         success: false,
         error: `Failed to update context metadata: ${errorMessage}`

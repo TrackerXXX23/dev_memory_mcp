@@ -1,5 +1,6 @@
-const { PineconeStore } = require('./core/store/pinecone');
-require('dotenv').config();
+import { PineconeStore } from './core/store/pinecone.js';
+import dotenv from 'dotenv';
+dotenv.config();
 
 async function testConnection() {
   const config = {

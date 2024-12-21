@@ -1,398 +1,269 @@
-/**
- * Pinecone vector store client implementation
- * Handles vector storage operations with connection monitoring and error handling
- */
+import { Pinecone } from '@pinecone-database/pinecone';
+import { 
+  VectorStore, 
+  VectorData, 
+  VectorOperationResponse, 
+  VectorSearchResult,
+  VectorStoreConfig,
+  VectorQueryMatch,
+  VectorQueryResponse 
+} from '../types/vector';
 
-import { Pinecone, RecordMetadata, Index } from '@pinecone-database/pinecone';
-import { VectorData, VectorQueryOptions, VectorSearchResult, VectorStoreConfig, VectorOperationResponse } from '../types/vector';
-import { VectorStore, MemoryStore } from '../store';
-import { EmbeddingsService } from '../utils/embeddings';
+const MONITORING_INTERVAL = 30000; // 30 seconds
 
-export class PineconeStore extends VectorStore implements MemoryStore {
-  private client: Pinecone;
-  private index!: Index; // Mark as definitely assigned
+export class PineconeStore implements VectorStore {
+  private client: Pinecone | null = null;
+  private index: any | null = null;
   private isConnected: boolean = false;
-  private readonly config: VectorStoreConfig;
   private lastError: string | null = null;
-  private connectionCheckInterval: NodeJS.Timeout | null = null;
+  private monitoringInterval: NodeJS.Timeout | null = null;
+  private isDisposed: boolean = false;
 
-  private embeddings: EmbeddingsService;
+  constructor(private config: VectorStoreConfig) {}
 
-  constructor(config: VectorStoreConfig) {
-    super();
-    this.config = config;
-    this.client = new Pinecone({
-      apiKey: config.apiKey
-    });
-    this.embeddings = new EmbeddingsService(config.apiKey);
-  }
-
-  /**
-   * Store a new memory entry
-   */
-  async storeMemory(content: string, metadata?: Record<string, any>): Promise<VectorOperationResponse> {
-    try {
-      const embeddingResult = await this.embeddings.generateEmbedding(content);
-      if (!embeddingResult.success || !embeddingResult.embedding) {
-        return embeddingResult;
-      }
-
-      const vector: VectorData = {
-        id: crypto.randomUUID(),
-        values: embeddingResult.embedding,
-        metadata: {
-          ...metadata,
-          content,
-          timestamp: new Date().toISOString()
-        }
-      };
-
-      return await this.upsertVectors([vector]);
-    } catch (error) {
-      this.lastError = error instanceof Error ? error.message : 'Failed to store memory';
-      return {
-        success: false,
-        error: this.lastError
-      };
-    }
-  }
-
-  /**
-   * Retrieve memories similar to the query
-   */
-  async retrieveMemories(
-    query: string | number[],
-    options?: VectorQueryOptions
-  ): Promise<VectorOperationResponse & { memories?: Array<{ content: string; metadata?: Record<string, any> }> }> {
-    try {
-      let queryVector: number[];
-      
-      if (typeof query === 'string') {
-        const embeddingResult = await this.embeddings.generateEmbedding(query);
-        if (!embeddingResult.success || !embeddingResult.embedding) {
-          return embeddingResult;
-        }
-        queryVector = embeddingResult.embedding;
-      } else {
-        queryVector = query;
-      }
-
-      const queryResult = await this.queryVectors(queryVector, {
-        ...options,
-        includeMetadata: true
-      });
-
-      if (!queryResult.success || !queryResult.results) {
-        return queryResult;
-      }
-
-      return {
-        success: true,
-        memories: queryResult.results.map(result => ({
-          content: result.metadata?.content || '',
-          metadata: result.metadata
-        }))
-      };
-    } catch (error) {
-      this.lastError = error instanceof Error ? error.message : 'Failed to retrieve memories';
-      return {
-        success: false,
-        error: this.lastError
-      };
-    }
-  }
-
-  /**
-   * Delete memories by ID
-   */
-  async deleteMemories(ids: string[]): Promise<VectorOperationResponse> {
-    return this.deleteVectors(ids);
-  }
-
-  /**
-   * Track relationships between memories
-   */
-  async trackRelationship(
-    sourceId: string,
-    targetId: string,
-    relationship: string
-  ): Promise<VectorOperationResponse> {
-    try {
-      // Get source vector to update its metadata
-      const sourceResult = await this.queryVectors([0], {
-        filter: { id: { $eq: sourceId } },
-        includeMetadata: true
-      });
-
-      if (!sourceResult.success || !sourceResult.results?.length) {
-        return {
-          success: false,
-          error: 'Source memory not found'
-        };
-      }
-
-      const sourceVector = sourceResult.results[0];
-      const relationships: Record<string, string[]> = sourceVector.metadata?.relationships || {};
-      relationships[relationship] = relationships[relationship] || [];
-      
-      if (!relationships[relationship].includes(targetId)) {
-        relationships[relationship].push(targetId);
-      }
-
-      // Update source vector with new relationship
-      return await this.upsertVectors([{
-        id: sourceId,
-        values: sourceVector.values || [],
-        metadata: {
-          ...sourceVector.metadata,
-          relationships
-        }
-      }]);
-    } catch (error) {
-      this.lastError = error instanceof Error ? error.message : 'Failed to track relationship';
-      return {
-        success: false,
-        error: this.lastError
-      };
-    }
-  }
-
-  /**
-   * Get related memories
-   */
-  async getRelatedMemories(
-    memoryId: string,
-    relationship?: string
-  ): Promise<VectorOperationResponse & { related?: Array<{ id: string; relationship: string }> }> {
-    try {
-      const result = await this.queryVectors([0], {
-        filter: { id: { $eq: memoryId } },
-        includeMetadata: true
-      });
-
-      if (!result.success || !result.results?.length) {
-        return {
-          success: false,
-          error: 'Memory not found'
-        };
-      }
-
-      const relationships: Record<string, string[]> = result.results[0].metadata?.relationships || {};
-      const related: Array<{ id: string; relationship: string }> = [];
-
-      if (relationship) {
-        // Return specific relationship type
-        const relatedIds = relationships[relationship] || [];
-        related.push(...relatedIds.map(id => ({ id, relationship })));
-      } else {
-        // Return all relationships
-        for (const [rel, ids] of Object.entries(relationships)) {
-          if (Array.isArray(ids)) {
-            related.push(...ids.map(id => ({ id, relationship: rel })));
-          }
-        }
-      }
-
-      return {
-        success: true,
-        related
-      };
-    } catch (error) {
-      this.lastError = error instanceof Error ? error.message : 'Failed to get related memories';
-      return {
-        success: false,
-        error: this.lastError
-      };
-    }
-  }
-
-  /**
-   * Get current connection status
-   */
-  public getConnectionStatus(): { isConnected: boolean; lastError: string | null } {
-    return {
-      isConnected: this.isConnected,
-      lastError: this.lastError,
-    };
-  }
-
-  /**
-   * Initialize connection to Pinecone index and start monitoring
-   */
   async initialize(): Promise<VectorOperationResponse> {
     try {
-      // Validate configuration
-      if (!this.config.indexName) {
-        throw new Error('Index name is required');
+      // Clear any existing state
+      await this.dispose();
+
+      // Reset disposed flag
+      this.isDisposed = false;
+
+      // Input validation
+      if (!this.config.apiKey || !this.config.environment || !this.config.indexName) {
+        throw new Error('Missing required configuration');
       }
 
-      // Initialize index
+      // Initialize Pinecone client
+      this.client = new Pinecone({
+        apiKey: this.config.apiKey
+      });
+
+      // Get index
       this.index = this.client.index(this.config.indexName);
       
-      // Test connection by describing index
-      await this.index.describeIndexStats();
-      
-      this.isConnected = true;
-      this.lastError = null;
+      // Test connection
+      const testResult = await this.testConnection();
+      if (!testResult.success) {
+        return testResult;
+      }
 
       // Start connection monitoring
       this.startConnectionMonitoring();
-
+      
       return { success: true };
     } catch (error) {
       this.isConnected = false;
-      this.lastError = error instanceof Error ? error.message : 'Failed to initialize Pinecone index';
-      
-      return {
-        success: false,
-        error: this.lastError,
-      };
+      this.lastError = error instanceof Error ? error.message : 'Failed to initialize';
+      return { success: false, error: this.lastError };
     }
   }
 
-  /**
-   * Test connection to Pinecone and update status
-   */
+  getConnectionStatus() {
+    return {
+      isConnected: this.isConnected && !this.isDisposed,
+      lastError: this.lastError
+    };
+  }
+
   async testConnection(): Promise<VectorOperationResponse> {
     try {
-      if (!this.index) {
-        throw new Error('Client not initialized');
+      if (!this.index || this.isDisposed) {
+        throw new Error('Store not initialized or disposed');
       }
 
+      // Test query to verify connection
       await this.index.describeIndexStats();
+      
       this.isConnected = true;
       this.lastError = null;
       return { success: true };
     } catch (error) {
       this.isConnected = false;
       this.lastError = error instanceof Error ? error.message : 'Connection test failed';
-      return {
-        success: false,
-        error: this.lastError,
-      };
+      return { success: false, error: this.lastError };
     }
   }
 
-  /**
-   * Start monitoring connection status
-   */
-  private startConnectionMonitoring(): void {
-    if (this.connectionCheckInterval) {
-      clearInterval(this.connectionCheckInterval);
+  private startConnectionMonitoring() {
+    // Clear any existing interval
+    if (this.monitoringInterval) {
+      clearInterval(this.monitoringInterval);
+      this.monitoringInterval = null;
     }
 
-    this.connectionCheckInterval = setInterval(async () => {
-      await this.testConnection();
-    }, 30000); // Check every 30 seconds
+    // Start new monitoring interval
+    this.monitoringInterval = setInterval(async () => {
+      if (this.isDisposed) {
+        if (this.monitoringInterval) {
+          clearInterval(this.monitoringInterval);
+          this.monitoringInterval = null;
+        }
+        return;
+      }
+
+      try {
+        await this.testConnection();
+      } catch (error) {
+        this.isConnected = false;
+        this.lastError = error instanceof Error ? error.message : 'Connection test failed';
+      }
+    }, MONITORING_INTERVAL);
+
+    // Ensure the interval is cleaned up on process exit
+    process.on('beforeExit', () => {
+      if (this.monitoringInterval) {
+        clearInterval(this.monitoringInterval);
+        this.monitoringInterval = null;
+      }
+    });
   }
 
-  /**
-   * Stop connection monitoring
-   */
-  public stopConnectionMonitoring(): void {
-    if (this.connectionCheckInterval) {
-      clearInterval(this.connectionCheckInterval);
-      this.connectionCheckInterval = null;
-    }
-  }
-
-  /**
-   * Upsert vectors to Pinecone index
-   */
   async upsertVectors(vectors: VectorData[]): Promise<VectorOperationResponse> {
     try {
-      if (!this.isConnected) {
-        throw new Error('Not connected to Pinecone');
+      // Input validation
+      if (!vectors || !Array.isArray(vectors) || vectors.length === 0) {
+        return { success: false, error: 'No vectors provided' };
       }
 
-      if (!vectors.length) {
-        throw new Error('No vectors provided');
+      // Validate vector format
+      for (const vector of vectors) {
+        if (!vector.id || !Array.isArray(vector.values) || vector.values.length === 0) {
+          return { success: false, error: 'Invalid vector format' };
+        }
       }
 
-      await this.index.upsert(vectors.map(vector => ({
-        id: vector.id,
-        values: vector.values,
-        metadata: vector.metadata,
-      })));
-      
+      // Connection check
+      if (!this.isConnected || !this.index || this.isDisposed) {
+        return { success: false, error: 'Not connected to Pinecone' };
+      }
+
+      // Format vectors for Pinecone
+      const formattedVectors = vectors.map(v => ({
+        id: v.id,
+        values: v.values,
+        metadata: v.metadata ? {
+          ...v.metadata,
+          _updated: new Date().toISOString()
+        } : {
+          _updated: new Date().toISOString()
+        }
+      }));
+
+      await this.index.upsert(formattedVectors);
       return { success: true };
     } catch (error) {
-      this.lastError = error instanceof Error ? error.message : 'Failed to upsert vectors';
-      return {
-        success: false,
-        error: this.lastError,
+      return { 
+        success: false, 
+        error: error instanceof Error ? error.message : 'Failed to upsert vectors'
       };
     }
   }
 
-  /**
-   * Query vectors by similarity
-   */
-  async queryVectors(queryVector: number[], options: VectorQueryOptions = {}): Promise<VectorOperationResponse & { results?: VectorSearchResult[] }> {
+  async queryVectors(
+    queryVector: number[],
+    options?: { topK?: number; filter?: Record<string, any> }
+  ): Promise<VectorOperationResponse & { results?: VectorSearchResult[] }> {
     try {
-      if (!this.isConnected) {
-        throw new Error('Not connected to Pinecone');
+      // Input validation
+      if (!queryVector || !Array.isArray(queryVector) || queryVector.length === 0) {
+        return { success: false, error: 'Invalid query vector' };
       }
 
-      if (!queryVector.length) {
-        throw new Error('Query vector is required');
+      // Connection check
+      if (!this.isConnected || !this.index || this.isDisposed) {
+        return { success: false, error: 'Not connected to Pinecone' };
       }
 
       const response = await this.index.query({
         vector: queryVector,
-        topK: options.topK || 10,
-        filter: options.filter,
-        includeMetadata: options.includeMetadata,
-      });
+        topK: options?.topK || 10,
+        filter: options?.filter,
+        includeMetadata: true
+      }) as VectorQueryResponse;
 
-      const results = response.matches?.map(match => ({
-        id: match.id,
-        score: match.score || 0, // Provide default score if undefined
-        metadata: match.metadata,
-      })) || [];
+      // Handle empty results
+      if (!response || !response.matches) {
+        return {
+          success: true,
+          results: []
+        };
+      }
 
+      // Map results to expected format
       return {
         success: true,
-        results,
+        results: response.matches.map((match: VectorQueryMatch) => ({
+          id: match.id,
+          score: match.score,
+          metadata: match.metadata || {}
+        }))
       };
     } catch (error) {
-      this.lastError = error instanceof Error ? error.message : 'Failed to query vectors';
-      return {
-        success: false,
-        error: this.lastError,
+      return { 
+        success: false, 
+        error: error instanceof Error ? error.message : 'Failed to query vectors'
       };
     }
   }
 
-  /**
-   * Delete vectors by ID
-   */
   async deleteVectors(ids: string[]): Promise<VectorOperationResponse> {
     try {
-      if (!this.isConnected) {
-        throw new Error('Not connected to Pinecone');
+      // Input validation
+      if (!ids || !Array.isArray(ids) || ids.length === 0) {
+        return { success: false, error: 'No vector IDs provided' };
       }
 
-      if (!ids.length) {
-        throw new Error('No vector IDs provided');
+      // Validate ID format
+      if (ids.some(id => typeof id !== 'string' || !id)) {
+        return { success: false, error: 'Invalid vector ID format' };
+      }
+
+      // Connection check
+      if (!this.isConnected || !this.index || this.isDisposed) {
+        return { success: false, error: 'Not connected to Pinecone' };
       }
 
       await this.index.deleteMany(ids);
       return { success: true };
     } catch (error) {
-      this.lastError = error instanceof Error ? error.message : 'Failed to delete vectors';
-      return {
-        success: false,
-        error: this.lastError,
+      return { 
+        success: false, 
+        error: error instanceof Error ? error.message : 'Failed to delete vectors'
       };
     }
   }
 
-  /**
-   * Cleanup resources
-   */
-  public dispose(): void {
-    this.stopConnectionMonitoring();
-    this.isConnected = false;
+  async dispose(): Promise<VectorOperationResponse> {
+    try {
+      // Mark as disposed first to prevent new operations
+      this.isDisposed = true;
+
+      // Clear monitoring interval
+      if (this.monitoringInterval) {
+        clearInterval(this.monitoringInterval);
+        this.monitoringInterval = null;
+      }
+
+      // Reset state
+      this.isConnected = false;
+      this.lastError = null;
+      this.client = null;
+      this.index = null;
+
+      return { success: true };
+    } catch (error) {
+      // Ensure resources are cleaned up even if an error occurs
+      this.monitoringInterval = null;
+      this.isConnected = false;
+      this.lastError = error instanceof Error ? error.message : 'Failed to dispose';
+      this.client = null;
+      this.index = null;
+
+      return { 
+        success: false, 
+        error: this.lastError 
+      };
+    }
   }
 }

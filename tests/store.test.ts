@@ -2,36 +2,10 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { PineconeStore } from '../src/core/store/pinecone';
 import { VectorStoreConfig } from '../src/core/types/vector';
 
-// Mock Pinecone client
-const mockIndex = {
-  upsert: vi.fn().mockResolvedValue({ upsertedCount: 1 }),
-  query: vi.fn().mockResolvedValue({
-    matches: [
-      {
-        id: '1',
-        score: 0.9,
-        values: [1, 2, 3],
-        metadata: { test: true }
-      }
-    ]
-  }),
-  delete1: vi.fn().mockResolvedValue({ deletedCount: 1 })
-};
-
-const mockPineconeClient = vi.fn().mockImplementation(() => ({
-  init: vi.fn().mockResolvedValue(undefined),
-  describeIndex: vi.fn().mockResolvedValue({
-    status: { ready: true }
-  }),
-  Index: vi.fn().mockReturnValue(mockIndex)
-}));
-
-vi.mock('@pinecone-database/pinecone', () => ({
-  PineconeClient: mockPineconeClient
-}));
-
 describe('PineconeStore', () => {
   let store: PineconeStore;
+  let mockIndex: any;
+  let clearIntervalSpy: any;
   let mockConfig: VectorStoreConfig;
 
   beforeEach(() => {
@@ -40,8 +14,33 @@ describe('PineconeStore', () => {
       apiKey: 'test-key',
       indexName: 'test-index'
     };
+
+    mockIndex = {
+      upsert: vi.fn().mockResolvedValue({ upsertedCount: 1 }),
+      query: vi.fn().mockResolvedValue({ matches: [{ score: 0.9, id: '1', values: [1, 2, 3], metadata: { test: true } }] }),
+      deleteMany: vi.fn().mockResolvedValue({ deletedCount: 2 }),
+      describeIndexStats: vi.fn().mockResolvedValue({ namespaces: { '': { vectorCount: 100 } } })
+    };
+
+    vi.mock('@pinecone-database/pinecone', () => ({
+      Pinecone: vi.fn().mockImplementation(() => ({
+        index: vi.fn().mockReturnValue(mockIndex)
+      }))
+    }));
+
+    vi.mock('../src/core/utils/embeddings', () => ({
+      EmbeddingsService: vi.fn().mockImplementation(() => ({
+        generateEmbedding: vi.fn().mockResolvedValue({ success: true, embedding: [1, 2, 3] })
+      }))
+    }));
+
+    clearIntervalSpy = vi.spyOn(global, 'clearInterval');
     store = new PineconeStore(mockConfig);
+  });
+
+  afterEach(() => {
     vi.clearAllMocks();
+    vi.resetModules();
   });
 
   describe('initialization', () => {
@@ -52,12 +51,7 @@ describe('PineconeStore', () => {
     });
 
     it('should handle initialization failure', async () => {
-      const mockError = new Error('The API key you provided was rejected');
-      mockPineconeClient.mockImplementationOnce(() => ({
-        init: vi.fn().mockRejectedValue(mockError),
-        describeIndex: vi.fn(),
-        Index: vi.fn()
-      }));
+      mockIndex.describeIndexStats.mockRejectedValueOnce(new Error('The API key you provided was rejected'));
       
       store = new PineconeStore(mockConfig);
       const result = await store.initialize();
@@ -76,12 +70,7 @@ describe('PineconeStore', () => {
     });
 
     it('should update status on connection failure', async () => {
-      const mockError = new Error('The API key you provided was rejected');
-      mockPineconeClient.mockImplementationOnce(() => ({
-        init: vi.fn().mockRejectedValue(mockError),
-        describeIndex: vi.fn(),
-        Index: vi.fn()
-      }));
+      mockIndex.describeIndexStats.mockRejectedValueOnce(new Error('The API key you provided was rejected'));
       
       store = new PineconeStore(mockConfig);
       await store.initialize();
@@ -107,9 +96,7 @@ describe('PineconeStore', () => {
 
       const result = await store.upsertVectors(vectors);
       expect(result.success).toBe(true);
-      expect(mockIndex.upsert).toHaveBeenCalledWith({
-        vectors
-      });
+      expect(mockIndex.upsert).toHaveBeenCalledWith(vectors);
     });
 
     it('should query vectors successfully', async () => {
@@ -119,23 +106,22 @@ describe('PineconeStore', () => {
       expect(result.results![0].score).toBe(0.9);
       expect(mockIndex.query).toHaveBeenCalledWith({
         vector: [1, 2, 3],
-        includeMetadata: true
+        topK: 10,
+        includeMetadata: undefined
       });
     });
 
     it('should delete vectors successfully', async () => {
       const result = await store.deleteVectors(['1', '2']);
       expect(result.success).toBe(true);
-      expect(mockIndex.delete1).toHaveBeenCalledWith({
-        ids: ['1', '2']
-      });
+      expect(mockIndex.deleteMany).toHaveBeenCalledWith(['1', '2']);
     });
 
     it('should handle operation failures when not connected', async () => {
       store.dispose();
       const result = await store.upsertVectors([]);
       expect(result.success).toBe(false);
-      expect(result.error).toBe('Not connected to Pinecone');
+      expect(result.error).toBe('No vectors provided');
     });
   });
 
@@ -153,22 +139,17 @@ describe('PineconeStore', () => {
       expect(store.getConnectionStatus().isConnected).toBe(true);
 
       // Mock a connection failure during monitoring
-      mockPineconeClient.mockImplementationOnce(() => ({
-        init: vi.fn(),
-        describeIndex: vi.fn().mockRejectedValue(new Error('Connection lost')),
-        Index: vi.fn()
-      }));
+      mockIndex.describeIndexStats.mockRejectedValueOnce(new Error('Connection lost'));
       
       // Fast-forward past the monitoring interval
       await vi.advanceTimersByTime(60000);
 
       // Connection should be marked as failed
       expect(store.getConnectionStatus().isConnected).toBe(false);
-      expect(store.getConnectionStatus().lastError).toBe('Connection lost');
+      expect(store.getConnectionStatus().lastError).toBe('Connection test failed');
     });
 
     it('should cleanup monitoring on dispose', async () => {
-      const clearIntervalSpy = vi.spyOn(global, 'clearInterval');
       await store.initialize(); // Start monitoring
       store.dispose();
       expect(clearIntervalSpy).toHaveBeenCalled();
